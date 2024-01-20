@@ -38,7 +38,7 @@ impute_fun<-function(data, t_interim){
 
   # A subset of W that includes all adjudicated events and non-events with
   # complete follow-up
-  # X = x, Y0 in {-1, 1, 1}, Y1 in {-1, 1, 1}, Z=1
+  # X = x, Y0 in {-1, 0, 1}, Y1 in {-1, 1, 1}, Z=1
   W_adj<-W[W$adjudicated==1,]
 
   # A subset of W that includes incomplete adjudications with events
@@ -57,12 +57,12 @@ impute_fun<-function(data, t_interim){
   # Make predictions
   #-----------------------------------------------------
 
-  #####################################
-  # Method 1: logit(y1) ~ x + t_event
-  #####################################
+  #############################################
+  # Method 1: logit(y1) ~ x1 + x2 + t_event
+  #############################################
 
   # Step 1: Fit logistic regression to adjudicated patients with events
-  binom1<-glm(y1_obs~x+t_event, family=binomial, data=W_adj_event)
+  binom1<-glm(y1_obs~x1+x2+t_event, family=binomial, data=W_adj_event)
   # Predict y1=1 in unadjudicated patients with events
   pred.binom1<-predict(binom1, newdata=W_unadj_event, type="response")
 
@@ -75,16 +75,18 @@ impute_fun<-function(data, t_interim){
   W_temp2$y1_obs<-pred.binom1 # Replace y1_obs with predicted values from step 1
   W_temp3<-rbind(W_temp1,W_temp2) #Bind adjudicated with predictions for unadjudicated
 
-  pois1 <- glm(y1_obs ~ x + offset(log(t_eligible)),
+  pois1 <- glm(y1_obs ~ x1 + x2 + offset(log(t_eligible)),
                data = W_temp3,
                family = quasipoisson)
   beta0.1<-pois1$coef[1]
   beta1.1<-pois1$coef[2]
-  x<-W_unadj_noevent$x
+  beta2.1<-pois1$coef[3]
+  x1<-W_unadj_noevent$x1
+  x2<-W_unadj_noevent$x2
   t_eligible<-W_unadj_noevent$t_eligible
 
   # Estimate hazard rate
-  h1 <- exp(beta0.1 + beta1.1*x)
+  h1 <- exp(beta0.1 + beta1.1*x1 + beta2.1*x2)
 
   # Calculate conditional probability of an event between time
   # t_eligible and t_interim:
@@ -95,24 +97,28 @@ impute_fun<-function(data, t_interim){
   # = 1 - exp(-h1*(t_interim-t_eligible))
   pred.pois1<-1-exp(-h1*(t_interim-t_eligible))
 
-  #######################################################
-  # Method 2: logit(y1) ~ x + t_event, stratified by y0
-  #######################################################
+  ############################################################
+  # Method 2: logit(y1) ~ x1 + x2 + t_event, stratified by y0
+  ############################################################
 
   # Step 1: Fit logistic regression to adjudicated patients with events
   # model 1: subset to Y0 = 0
   # model 2: subset to Y0 = 1
-  binom2.y0eq0<-glm(y1_obs~x+t_event, family=binomial, data=W_adj_event[W_adj_event$y0==0,])
-  binom2.y0eq1<-glm(y1_obs~x+t_event, family=binomial, data=W_adj_event[W_adj_event$y0==1,])
+  binom2.y0eq0<-glm(y1_obs~x1+x2+t_event, family=binomial, data=W_adj_event[W_adj_event$y0==0,])
+  binom2.y0eq1<-glm(y1_obs~x1+x2+t_event, family=binomial, data=W_adj_event[W_adj_event$y0==1,])
 
   # Predict y1=1 given y0=0 in unadjudicated patients with events
-  pred.binom2.y0eq0<-predict(binom2.y0eq0,
+  if(nrow(W_unadj_event[W_unadj_event$y0==0,])!=0){
+    pred.binom2.y0eq0<-predict(binom2.y0eq0,
                              newdata=W_unadj_event[W_unadj_event$y0==0,],
                              type="response")
+  }else{pred.binom2.y0eq0<-c()}
   # Predict y1=1 given y0=1 in unadjudicated patients with events
-  pred.binom2.y0eq1<-predict(binom2.y0eq1,
+  if(nrow(W_unadj_event[W_unadj_event$y0==1,])!=0){
+    pred.binom2.y0eq1<-predict(binom2.y0eq1,
                              newdata=W_unadj_event[W_unadj_event$y0==1,],
                              type="response")
+  }else{pred.binom2.y0eq1<-c()}
 
   # Step 2: Fit quasi-Poisson model with offset to combined dataset that
   # includes adjudicated patients with events AND predictions from step 1.
@@ -125,16 +131,18 @@ impute_fun<-function(data, t_interim){
   W_temp2[W_temp2$y0==1,]$y1_obs<-pred.binom2.y0eq1
   W_temp3<-rbind(W_temp1,W_temp2) #Bind adjudicated with predictions from unadjudicated
 
-  pois2 <- glm(y1_obs ~ x + offset(log(t_eligible)),
+  pois2 <- glm(y1_obs ~ x1 + x2 + offset(log(t_eligible)),
                data = W_temp3,
                family = quasipoisson)
   beta0.2<-pois2$coef[1]
   beta1.2<-pois2$coef[2]
-  x<-W_unadj_noevent$x
+  beta2.2<-pois2$coef[3]
+  x1<-W_unadj_noevent$x1
+  x2<-W_unadj_noevent$x2
   t_eligible<-W_unadj_noevent$t_eligible
 
   # Estimate hazard rate
-  h2 <- exp(beta0.2 + beta1.2*x)
+  h2 <- exp(beta0.2 + beta1.2*x1 + beta2.2*x2)
 
   # Calculate conditional probability of an event between time
   # t_eligible and t_interim:
@@ -152,7 +160,7 @@ impute_fun<-function(data, t_interim){
   #-----------------------------------------------------------------------------
 
   ##############################################################################
-  # Method 0: logit(y1) ~ x + t_event
+  # Method 0: logit(y1) ~ x1 + x2 + t_event
   # Approach: analyze all data to include adjudicated outcomes and unadjudicated
   # outcomes from predictions
   #
@@ -178,7 +186,7 @@ impute_fun<-function(data, t_interim){
   p_method0
 
   ##############################################################################
-  # Method 1: logit(y1) ~ x + t_event
+  # Method 1: logit(y1) ~ x1 + x2 + t_event
   # Approach: analyze all data to include adjudicated outcomes and unadjudicated
   # outcomes from predictions
   #
@@ -212,7 +220,7 @@ impute_fun<-function(data, t_interim){
   p_FPR_method1<-mean((pred_error_method1==1)*1)
 
   ##############################################################################
-  # Method 2: logit(y1) ~ x + t_event, stratified by y0
+  # Method 2: logit(y1) ~ x1 + x2 + t_event, stratified by y0
   # Approach: analyze all data to include adjudicated outcomes and unadjudicated
   # outcomes from predictions
   #
@@ -370,32 +378,22 @@ strat_boot_serial<-function(data, B, seedling){
 
   set.seed(seedling)
 
-  id_adj_y0_neg1<-which(data$adjudicated==1 & data$y0==-1) #ids for adjudicated and y0=-1
-  id_adj_y0_0<-which(data$adjudicated==1 & data$y0==0) #ids for adjudicated and y0=0
-  id_adj_y0_pos1<-which(data$adjudicated==1 & data$y0==1) #ids for adjudicated and y0=1
-  id_unadj_y0_neg1<-which(data$adjudicated==0 & data$y0==-1) #ids for unadjudicated and y0=-1
-  id_unadj_y0_0<-which(data$adjudicated==0 & data$y0==0) #ids for unadjudicated and y0=0
-  id_unadj_y0_pos1<-which(data$adjudicated==0 & data$y0==1) #ids for unadjudicated and y0=1
+  id_adj<-which(data$adjudicated==1)
+  id_unadj<-which(data$adjudicated==0)
 
-  n0<-nrow(data)
   boot_data<-list()
   boot_p<-matrix(NA,nrow=B,ncol=13)
 
   for (i in seq_len(B)){
-
-    samp1<-data[safer_sample(id_adj_y0_neg1, length(id_adj_y0_neg1),replace=TRUE), ]
-    samp2<-data[safer_sample(id_adj_y0_0, length(id_adj_y0_0), replace=TRUE), ]
-    samp3<-data[safer_sample(id_adj_y0_pos1,length(id_adj_y0_pos1), replace=TRUE), ]
-    samp4<-data[safer_sample(id_unadj_y0_neg1, length(id_unadj_y0_neg1), replace=TRUE), ]
-    samp5<-data[safer_sample(id_unadj_y0_0, length(id_unadj_y0_0), replace=TRUE), ]
-    samp6<-data[safer_sample(id_unadj_y0_pos1, length(id_unadj_y0_pos1), replace=TRUE), ]
-    boot_data[[i]]<-rbind(samp1,samp2,samp3,samp4,samp5,samp6)
-
+    samp1<-data[safer_sample(id_adj, length(id_adj),replace=TRUE), ]
+    samp2<-data[safer_sample(id_unadj, length(id_unadj),replace=TRUE), ]
+    boot_data[[i]]<-rbind(samp1,samp2)
+    thing<<-boot_data[[i]]
     boot_p[i,]<-as.numeric(impute_fun(boot_data[[i]],t_interim))
   }
 
   colnames(boot_p)<-c("p_method0", "p_method1", "p_method2", "p_complete",
-                      "p_carryforward", "p_nonevent",  "p_event",
+                      "p_carryforward", "p_y1eq0",  "p_y1eq1",
                       "p_TER_method1", "p_FNR_method1","p_FPR_method1",
                       "p_TER_method2", "p_FNR_method2","p_FPR_method2")
   return(boot_p)
@@ -407,29 +405,19 @@ strat_boot_parallel <- function(data, B, seedling, cl) {
   set.seed(seedling)
 
   # Create necessary indices
-  id_adj_y0_neg1 <- which(data$adjudicated == 1 & data$y0 == -1)
-  id_adj_y0_0 <- which(data$adjudicated == 1 & data$y0 == 0)
-  id_adj_y0_pos1 <- which(data$adjudicated == 1 & data$y0 == 1)
-  id_unadj_y0_neg1 <- which(data$adjudicated == 0 & data$y0 == -1)
-  id_unadj_y0_0 <- which(data$adjudicated == 0 & data$y0 == 0)
-  id_unadj_y0_pos1 <- which(data$adjudicated == 0 & data$y0 == 1)
+  id_adj<-which(data$adjudicated==1)
+  id_unadj<-which(data$adjudicated==0)
 
   # Export necessary variables and functions to the cluster
-  clusterExport(cl, varlist = c("data", "id_adj_y0_neg1", "id_adj_y0_0", "id_adj_y0_pos1",
-                                "id_unadj_y0_neg1", "id_unadj_y0_0", "id_unadj_y0_pos1",
-                                "impute_fun", "t_interim"), envir = environment())
+  clusterExport(cl, varlist = c("data", "id_adj","id_unadj",
+                                "impute_fun", "t_interim","safer_sample"),
+                envir = environment())
 
   # Define the function to be applied in parallel
   boot_func <- function(i) {
-
-    samp1<-data[safer_sample(id_adj_y0_neg1, length(id_adj_y0_neg1),replace=TRUE), ]
-    samp2<-data[safer_sample(id_adj_y0_0, length(id_adj_y0_0), replace=TRUE), ]
-    samp3<-data[safer_sample(id_adj_y0_pos1,length(id_adj_y0_pos1), replace=TRUE), ]
-    samp4<-data[safer_sample(id_unadj_y0_neg1, length(id_unadj_y0_neg1), replace=TRUE), ]
-    samp5<-data[safer_sample(as.list(id_unadj_y0_0), length(id_unadj_y0_0), replace=TRUE), ]
-    samp6<-data[safer_sample(as.list(id_unadj_y0_pos1), length(id_unadj_y0_pos1), replace=TRUE), ]
-    boot_data <- rbind(samp1, samp2, samp3, samp4, samp5, samp6)
-
+    samp1<-data[safer_sample(id_adj, length(id_adj),replace=TRUE), ]
+    samp2<-data[safer_sample(id_unadj, length(id_unadj),replace=TRUE), ]
+    boot_data <- rbind(samp1, samp2)
     as.numeric(impute_fun(boot_data, t_interim))
   }
 
@@ -438,7 +426,7 @@ strat_boot_parallel <- function(data, B, seedling, cl) {
   boot_p <- do.call(rbind, boot_p)  # Convert the list to a matrix
 
   colnames(boot_p) <- c("p_method0", "p_method1", "p_method2", "p_complete",
-                        "p_carryforward", "p_nonevent",  "p_event",
+                        "p_carryforward", "p_y1eq0",  "p_y1eq1",
                         "p_TER_method1", "p_FNR_method1","p_FPR_method1",
                         "p_TER_method2", "p_FNR_method2","p_FPR_method2")
   return(boot_p)
@@ -468,7 +456,7 @@ ci_boot<-function(boots, alpha){
 source(paste0(script_path,"/simulate_data.R"))
 
 n_vec<-c(250,500,1000) #sample size available for interim analysis
-error_y0_vec<-c(0.05, 0.1, 0.2, 0.3) # error in y0: 5%, 10%, 20%, 30%
+error_y0_vec<-c(0.05, 0.1, 0.3) # error in y0: 5%, 10%, 30%
 adj_rate<-0.50 #adjudication rate
 B<-100 # number of bootstraps
 D<-20 # number of datasets
@@ -484,7 +472,7 @@ RMSE_mat<-data.frame("RMSE"=0,"Method"=0,"n"=0,"error_y0"=0)
 i<-j<-k<-0
 
 names_benchmark<-c("Method 0", "Method 1", "Method 2", "Complete Case",
-                   "Carry Forward", "Non-event", "Event", "Truth")
+                   "Carry Forward", "Assign Y1=0", "Assign Y1=1", "Truth")
 names_error<-c("Method 1 total", "Method 1 false negatives", "Method 1 false positives",
                "Method 2 total", "Method 2 false negatives", "Method 2 false positives")
 
@@ -510,7 +498,7 @@ for(n in n_vec){
         print(d)
 
         # Simulate data
-        test_data<-sim_data(n=n,
+        test_data<-sim_fun(n=n,
                             error_y0=error_y0,
                             adj_rate=adj_rate,
                             t_interim=t_interim,
@@ -522,7 +510,7 @@ for(n in n_vec){
         # Stratified bootstrap
         parallel<-T
         # Only initiate cluster once if running in parallel (saves time)
-        if(seedling==1 & parallel=T){
+        if(seedling==1 & parallel==T){
           library(parallel)
 
           # Number of cores
@@ -531,7 +519,7 @@ for(n in n_vec){
           # Create a cluster
           cl <- makeCluster(no_cores)
         }
-        boots_out<-strat_boot_parallel(data=test_data, B=B, seedling=seedling)
+        boots_out<-strat_boot_serial(data=test_data, B=B, seedling=seedling)
 
         # Store prediction error for unadjudicated events for methods 1 and 2
         pred_error[d,]<-colMeans(boots_out[,8:13])
@@ -586,9 +574,9 @@ for(n in n_vec){
 }
 
 # Stop the cluster if running in parallel
-if(parallel=T){stopCluster(cl)}
+if(parallel==T){stopCluster(cl)}
 
-save(CP_mat, Bias_mat, RMSE_mat,
+save(CP_mat, Bias_mat, RMSE_mat, Pred_error_mat,
      file = paste0(script_path,"/output/sims_blinded_50pctadj.R"))
 
 #-------------------------------------------------------------------------
@@ -604,6 +592,18 @@ library(scales)
 
 options(scipen=0)
 
+custom_theme <- theme_bw(base_size = 10) +  # Set the base font size to 10
+  theme(
+    axis.text = element_text(size = rel(1.2)),    # Adjust axis text size
+    axis.title = element_text(size = rel(1.4)),   # Adjust axis title size
+    axis.title.y = element_text(size = rel(1.2)), # Enlarge y-axis title size specifically
+    plot.title = element_text(size = rel(1.6)),   # Adjust plot title size
+    strip.text = element_text(size = rel(1.3)),   # Adjust facet strip text size
+    legend.text = element_text(size = rel(1.2)),  # Adjust legend text size
+    legend.title = element_text(size = rel(1.4))  # Adjust legend title size
+    # Add other theme adjustments here if needed
+  )
+
 # Panel plot for bias
 Bias_mat %>%
   ggplot(aes(x = Method, y = as.numeric(bias), fill = Method)) +
@@ -611,7 +611,7 @@ Bias_mat %>%
   facet_grid(error_y0 ~ factor(n,levels=c('n=250','n=500','n=1000')),
              scales = "free") +
   labs(x = "", y = "Bias") +
-  theme_bw()+
+  custom_theme +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 ggsave(file = paste0(script_path,"/output/Bias_50pctadj.jpg"),
        plot = last_plot(), width = 7.5, height = 5.82, dpi = 600)
@@ -623,7 +623,7 @@ CP_mat %>%
   facet_grid(error_y0 ~ factor(n,levels=c('n=250','n=500','n=1000')),
              scales = "free") +
   labs(x = "", y = "Coverage probability of 95% CI (%)") +
-  theme_bw()+
+  custom_theme +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
   geom_hline(yintercept=95,linetype=2)
 ggsave(file = paste0(script_path,"/output/Coverage_Prob_50pctadj.jpg"),
@@ -636,7 +636,7 @@ RMSE_mat %>%
   facet_grid(error_y0 ~ factor(n,levels=c('n=250','n=500','n=1000')),
              scales = "fixed") +
   labs(x = "", y = "Average root mean squared error (RMSE)") +
-  theme_bw()+
+  custom_theme +
   scale_y_continuous(trans='log10',breaks=c(0.01,0.03,0.10,0.30)) +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 ggsave(file = paste0(script_path,"/output/RMSE_50pctadj.jpg"),
@@ -655,7 +655,7 @@ p <- ggplot(data = Pred_error_mat,
   facet_grid(error_y0 ~ factor(n,levels=c('n=250','n=500','n=1000')) + Error_Type,
              scales="fixed") +
   labs(x = "", y = "Prediction error for unadjudicated events") +
-  theme_bw() +
+  custom_theme +
   scale_y_continuous(trans='log10', breaks=c(0.03,0.10,0.30), limits=c(0.03, NA)) +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 
@@ -676,7 +676,7 @@ labs   <- c('n=250','n=500','n=1000')
 for(i in seq_along(labs))
 {
   filler <- rectGrob(y = 0.72, height = 0.57, gp = gpar(fill = "gray85", col = "black"))
-  tg    <- textGrob(label = labs[i], y = 0.75, gp = gpar(cex = 0.8))
+  tg    <- textGrob(label = labs[i], y = 0.75, gp = gpar(cex = 1.2))
   g     <- gtable_add_grob(g, filler, t = t_vals[i], l = l_vals[i], r = r_vals[i],
                            name = paste0("filler", i))
   g     <- gtable_add_grob(g, tg, t = t_vals[i], l = l_vals[i], r = r_vals[i],
