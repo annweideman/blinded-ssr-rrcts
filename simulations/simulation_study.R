@@ -64,38 +64,53 @@ impute_fun<-function(data, t_interim){
   # Step 1: Fit logistic regression to adjudicated patients with events
   binom1<-glm(y1_obs~x1+x2+t_event, family=binomial, data=W_adj_event)
   # Predict y1=1 in unadjudicated patients with events
-  pred.binom1<-predict(binom1, newdata=W_unadj_event, type="response")
+  prob.binom1<-predict(binom1, newdata=W_unadj_event, type="response")
+  pred.binom1<-rbinom(nrow(W_unadj_event),1,prob.binom1) #new
 
-  # Step 2: Fit quasi-Poisson model with offset to combined dataset that
+  # Step 2: Fit Cox proportional hazards model to combined dataset that
   # includes adjudicated patients with events AND predictions from step 1.
-  # Thus, y1 will include 0, 1, and values between 0-1.
   W_temp1<-W_adj #Adjudicated outcomes
   W_temp1$y1_obs[W_temp1$y1_obs==-1]<-0 # Treat any non-events as 0 for this prediction
   W_temp2<-W_unadj_event # Unadjudicated outcomes with events
   W_temp2$y1_obs<-pred.binom1 # Replace y1_obs with predicted values from step 1
   W_temp3<-rbind(W_temp1,W_temp2) #Bind adjudicated with predictions for unadjudicated
 
-  pois1 <- glm(y1_obs ~ x1 + x2 + offset(log(t_eligible)),
-               data = W_temp3,
-               family = quasipoisson)
-  beta0.1<-pois1$coef[1]
-  beta1.1<-pois1$coef[2]
-  beta2.1<-pois1$coef[3]
-  x1<-W_unadj_noevent$x1
-  x2<-W_unadj_noevent$x2
-  t_eligible<-W_unadj_noevent$t_eligible
+  library(survival)
+  # Cox regression
+  cox1 <- coxph(Surv(t_eligible, y1_obs) ~ x1 + x2, data = W_temp3)
 
-  # Estimate hazard rate
-  h1 <- exp(beta0.1 + beta1.1*x1 + beta2.1*x2)
+  # Predict relative risks for W_unadj_noevent
+  rr1 <- predict(cox1, newdata = W_unadj_noevent, type = "risk")
 
-  # Calculate conditional probability of an event between time
-  # t_eligible and t_interim:
+  # Estimate the baseline hazard function using Breslow's estimator
+  baseline_h1 <- basehaz(cox1, centered = FALSE)
+
+  # Function to interpolate baseline hazard for each time point
+  interpolate_hazard <- function(time_points, baseline_h) {
+    sapply(time_points, function(time) {
+      if(any(baseline_h$time >= time)) {
+        idx <- which.max(baseline_h$time[baseline_h$time <= time])
+        return(baseline_h$hazard[idx])
+      } else {
+        return(NA)
+      }
+    })
+  }
+
+  # Interpolate the baseline hazard for each time point in W_unadj_noevent
+  interpolated_baseline_h1 <- interpolate_hazard(W_unadj_noevent$t_eligible, baseline_h1)
+
+  # Calculate absolute hazard rates
+  h1 <- interpolated_baseline_h1 * rr1
+
+  # Calculate conditional probability of an event between time t_eligible and t_interim:
   # P(t_eligible < T < t_interim | T > t_eligible)
   # = P(T > t_eligible | T > t_eligible) - P( T > t_interim | T > t_eligible)
   # = 1 - S(t_interim | T > t_eligible)
   # = 1 - exp(-h1*t_interim)/exp(-h1*t_eligible)
   # = 1 - exp(-h1*(t_interim-t_eligible))
-  pred.pois1<-1-exp(-h1*(t_interim-t_eligible))
+  prob.cox1<-1-exp(-h1*(t_interim-W_unadj_noevent$t_eligible))
+  pred.cox1<-rbinom(nrow(W_unadj_noevent),1,prob.cox1)
 
   ############################################################
   # Method 2: logit(y1) ~ x1 + x2 + t_event, stratified by y0
@@ -109,49 +124,55 @@ impute_fun<-function(data, t_interim){
 
   # Predict y1=1 given y0=0 in unadjudicated patients with events
   if(nrow(W_unadj_event[W_unadj_event$y0==0,])!=0){
-    pred.binom2.y0eq0<-predict(binom2.y0eq0,
+    prob.binom2.y0eq0<-predict(binom2.y0eq0,
                              newdata=W_unadj_event[W_unadj_event$y0==0,],
                              type="response")
+    pred.binom2.y0eq0<-rbinom(nrow(W_unadj_event[W_unadj_event$y0==0,]),
+                        1,prob.binom2.y0eq0)
   }else{pred.binom2.y0eq0<-c()}
   # Predict y1=1 given y0=1 in unadjudicated patients with events
   if(nrow(W_unadj_event[W_unadj_event$y0==1,])!=0){
-    pred.binom2.y0eq1<-predict(binom2.y0eq1,
+    prob.binom2.y0eq1<-predict(binom2.y0eq1,
                              newdata=W_unadj_event[W_unadj_event$y0==1,],
                              type="response")
+    pred.binom2.y0eq1<-rbinom(nrow(W_unadj_event[W_unadj_event$y0==1,]),
+                        1,prob.binom2.y0eq1)
   }else{pred.binom2.y0eq1<-c()}
 
-  # Step 2: Fit quasi-Poisson model with offset to combined dataset that
+  # Step 2: Fit Cox proportional hazards model to combined dataset that
   # includes adjudicated patients with events AND predictions from step 1.
-  # Thus, y1 will include 0, 1, and values between 0-1.
-  W_temp1<-W_adj #Adjudicated outcomes
-  W_temp1$y1_obs[W_temp1$y1_obs==-1]<-0 # Treat any non-events as 0 for this prediction
-  W_temp2<-W_unadj_event # Unadjudicated outcomes with events
+  W_temp4<-W_adj #Adjudicated outcomes
+  W_temp4$y1_obs[W_temp4$y1_obs==-1]<-0 # Treat any non-events as 0 for this prediction
+  W_temp5<-W_unadj_event # Unadjudicated outcomes with events
   # Replace y1_obs with predicted values from step 1
-  W_temp2[W_temp2$y0==0,]$y1_obs<-pred.binom2.y0eq0
-  W_temp2[W_temp2$y0==1,]$y1_obs<-pred.binom2.y0eq1
-  W_temp3<-rbind(W_temp1,W_temp2) #Bind adjudicated with predictions from unadjudicated
+  W_temp5[W_temp5$y0==0,]$y1_obs<-pred.binom2.y0eq0
+  W_temp5[W_temp5$y0==1,]$y1_obs<-pred.binom2.y0eq1
+  W_temp6<-rbind(W_temp4,W_temp5) #Bind adjudicated with predictions from unadjudicated
 
-  pois2 <- glm(y1_obs ~ x1 + x2 + offset(log(t_eligible)),
-               data = W_temp3,
-               family = quasipoisson)
-  beta0.2<-pois2$coef[1]
-  beta1.2<-pois2$coef[2]
-  beta2.2<-pois2$coef[3]
-  x1<-W_unadj_noevent$x1
-  x2<-W_unadj_noevent$x2
-  t_eligible<-W_unadj_noevent$t_eligible
+  library(survival)
+  # Cox regression
+  cox2 <- coxph(Surv(t_eligible, y1_obs) ~ x1 + x2, data = W_temp6)
 
-  # Estimate hazard rate
-  h2 <- exp(beta0.2 + beta1.2*x1 + beta2.2*x2)
+  # Estimate the baseline hazard function using Breslow's estimator
+  baseline_h2 <- basehaz(cox2, centered = FALSE)
 
-  # Calculate conditional probability of an event between time
-  # t_eligible and t_interim:
+  # Predict relative risks for W_unadj_noevent
+  rr2 <- predict(cox2, newdata = W_unadj_noevent, type = "risk")
+
+  # Interpolate the baseline hazard for each time point in W_unadj_noevent
+  interpolated_baseline_h2 <- interpolate_hazard(W_unadj_noevent$t_eligible, baseline_h2)
+
+  # Calculate absolute hazard rates
+  h2 <- interpolated_baseline_h2 * rr2
+
+  # Calculate conditional probability of an event between time t_eligible and t_interim:
   # P(t_eligible < T < t_interim | T > t_eligible)
   # = P(T > t_eligible | T > t_eligible) - P( T > t_interim | T > t_eligible)
   # = 1 - S(t_interim | T > t_eligible)
   # = 1 - exp(-h2*t_interim)/exp(-h2*t_eligible)
   # = 1 - exp(-h2*(t_interim-t_eligible))
-  pred.pois2<-1-exp(-h2*(t_interim-t_eligible))
+  prob.cox2<-1-exp(-h2*(t_interim-W_unadj_noevent$t_eligible))
+  pred.cox2<-rbinom(nrow(W_unadj_noevent),1,prob.cox2)
 
   #-----------------------------------------------------------------------------
   # Estimate probability of an event in all subjects irrespective of
@@ -200,8 +221,8 @@ impute_fun<-function(data, t_interim){
   ymethod1<-W$y1_obs
   # Replace unadjudicated y1 that are events with predictions from binomial model
   ymethod1[W$adjudicated==0 & W$event==1]<-pred.binom1
-  # Replace unadjudicated y1 that are non-events with predictions from Poisson model
-  ymethod1[W$adjudicated==0 & W$event==0]<-pred.pois1
+  # Replace unadjudicated y1 that are non-events with predictions from Cox model
+  ymethod1[W$adjudicated==0 & W$event==0]<-pred.cox1
   # Average number of classifying events (y_obs=1)
   # (ymethod1>-1)*ymethod1 treats -1's as 0's when computing mean
   p_method1<-mean((ymethod1>-1)*ymethod1)
@@ -235,8 +256,8 @@ impute_fun<-function(data, t_interim){
   # Replace unadjudicated y1 that are events with predictions from binomial model
   ymethod2[W$y0==0 & W$adjudicated==0]<-pred.binom2.y0eq0 #for y0=0
   ymethod2[W$y0==1 & W$adjudicated==0]<-pred.binom2.y0eq1 #for y0=1
-  # Replace unadjudicated y1 that are non-events with predictions from Poisson model
-  ymethod2[W$adjudicated==0 & W$event==0]<-pred.pois2
+  # Replace unadjudicated y1 that are non-events with predictions from Cox model
+  ymethod2[W$adjudicated==0 & W$event==0]<-pred.cox2
   # Average number of classifying events (y_obs=1)
   # (ymethod2>-1)*ymethod2 treats -1's as 0's when computing mean
   p_method2<-mean((ymethod2>-1)*ymethod2)
@@ -363,14 +384,18 @@ impute_fun<-function(data, t_interim){
               p_carryforward=p_carryforward,
               p_not_classifying_event= p_not_classifying_event,
               p_classifying_event=p_classifying_event,
-              p_TER_method1, p_FNR_method1, p_FPR_method1,
-              p_TER_method2, p_FNR_method2, p_FPR_method2))
+              p_TER_method1=p_TER_method1,
+              p_FNR_method1=p_FNR_method1,
+              p_FPR_method1=p_FPR_method1,
+              p_TER_method2=p_TER_method2,
+              p_FNR_method2=p_FNR_method2,
+              p_FPR_method2=p_FPR_method2))
 }
 
 #-------------------------------------------------------------------------------
 # Functions for stratified bootstrap of predicted probabilities
-# Note: the stratification across adjudications and Y0 ensures balance in the
-# resampled datasets
+# Note: the stratification across adjudications and event status ensures balance
+# in the resampled datasets
 #-------------------------------------------------------------------------------
 
 # Serial version
@@ -378,17 +403,21 @@ strat_boot_serial<-function(data, B, seedling){
 
   set.seed(seedling)
 
-  id_adj<-which(data$adjudicated==1)
-  id_unadj<-which(data$adjudicated==0)
+  # Create necessary indices for stratification
+  id_adj_event<-which(data$adjudicated==1 & data$event==1)
+  id_adj_noevent<-which(data$adjudicated==1 & data$event==0)
+  id_unadj_event<-which(data$adjudicated==0 & data$event==1)
+  id_unadj_noevent<-which(data$adjudicated==0 & data$event==0)
 
   boot_data<-list()
   boot_p<-matrix(NA,nrow=B,ncol=13)
 
   for (i in seq_len(B)){
-    samp1<-data[safer_sample(id_adj, length(id_adj),replace=TRUE), ]
-    samp2<-data[safer_sample(id_unadj, length(id_unadj),replace=TRUE), ]
-    boot_data[[i]]<-rbind(samp1,samp2)
-    thing<<-boot_data[[i]]
+    samp1<-data[safer_sample(id_adj_event, length(id_adj_event),replace=TRUE), ]
+    samp2<-data[safer_sample(id_adj_noevent, length(id_adj_noevent),replace=TRUE), ]
+    samp3<-data[safer_sample(id_unadj_event, length(id_unadj_event),replace=TRUE), ]
+    samp4<-data[safer_sample(id_unadj_noevent, length(id_unadj_noevent),replace=TRUE), ]
+    boot_data <- rbind(samp1, samp2, samp3, samp4)
     boot_p[i,]<-as.numeric(impute_fun(boot_data[[i]],t_interim))
   }
 
@@ -404,20 +433,24 @@ strat_boot_parallel <- function(data, B, seedling, cl) {
 
   set.seed(seedling)
 
-  # Create necessary indices
-  id_adj<-which(data$adjudicated==1)
-  id_unadj<-which(data$adjudicated==0)
+  # Create necessary indices for stratification
+  id_adj_event<-which(data$adjudicated==1 & data$event==1)
+  id_adj_noevent<-which(data$adjudicated==1 & data$event==0)
+  id_unadj_event<-which(data$adjudicated==0 & data$event==1)
+  id_unadj_noevent<-which(data$adjudicated==0 & data$event==0)
 
-  # Export necessary variables and functions to the cluster
-  clusterExport(cl, varlist = c("data", "id_adj","id_unadj",
+  clusterExport(cl, varlist = c("data", "id_adj_event", "id_adj_noevent",
+                                "id_unadj_event", "id_unadj_noevent",
                                 "impute_fun", "t_interim","safer_sample"),
-                envir = environment())
+                 envir = environment())
 
   # Define the function to be applied in parallel
   boot_func <- function(i) {
-    samp1<-data[safer_sample(id_adj, length(id_adj),replace=TRUE), ]
-    samp2<-data[safer_sample(id_unadj, length(id_unadj),replace=TRUE), ]
-    boot_data <- rbind(samp1, samp2)
+    samp1<-data[safer_sample(id_adj_event, length(id_adj_event),replace=TRUE), ]
+    samp2<-data[safer_sample(id_adj_noevent, length(id_adj_noevent),replace=TRUE), ]
+    samp3<-data[safer_sample(id_unadj_event, length(id_unadj_event),replace=TRUE), ]
+    samp4<-data[safer_sample(id_unadj_noevent, length(id_unadj_noevent),replace=TRUE), ]
+    boot_data <- rbind(samp1, samp2, samp3, samp4)
     as.numeric(impute_fun(boot_data, t_interim))
   }
 
@@ -433,20 +466,18 @@ strat_boot_parallel <- function(data, B, seedling, cl) {
 }
 
 #-------------------------------------------------------------------------
-# Function for bootstrap percentile CI
+# Function for bias-corrected CI
 #-------------------------------------------------------------------------
 
-ci_boot<-function(boots, alpha){
+ci_boot <- function(test_data, boots, alpha) {
 
-  B<-nrow(boots)
-  lower_id<-floor(alpha*B/2); if(lower_id==0){lower_id=1}
-  upper_id<-floor((1-alpha/2)*B)
-  order_ids<-apply(boots, 2, order)
-  order_boots<-sapply(1:ncol(boots), function(i) boots[order_ids[,i],i])
-  CI_LB<-sapply(1:ncol(boots), function(i) order_boots[lower_id,i])
-  CI_UB<-sapply(1:ncol(boots), function(i) order_boots[upper_id,i])
+  boots_corrected<-2*unlist(impute_fun(data=test_data, t_interim)[1:7])-colMeans(boots)
 
-  return(list(CI_LB=CI_LB, CI_UB=CI_UB))
+  # Extract the lower and upper confidence interval bounds
+  CI_LB <- boots_corrected+qnorm(alpha/2,lower.tail=T)*apply(boots, 2, sd)
+  CI_UB <- boots_corrected+qnorm(alpha/2,lower.tail=F)*apply(boots, 2, sd)
+
+  return(list(CI_LB = CI_LB, CI_UB = CI_UB))
 }
 
 #-------------------------------------------------------------------------
@@ -457,9 +488,9 @@ source(paste0(script_path,"/simulate_data.R"))
 
 n_vec<-c(250,500,1000) #sample size available for interim analysis
 error_y0_vec<-c(0.05, 0.1, 0.3) # error in y0: 5%, 10%, 30%
-adj_rate<-0.50 #adjudication rate
-B<-100 # number of bootstraps
-D<-20 # number of datasets
+adj_rate<-0.75 #adjudication rate
+B<-1000 # number of bootstraps
+D<-100 # number of datasets
 R<-10 # number of replicates
 t_interim<-1 #time (in years) from first randomization to interim analysis
 
@@ -482,7 +513,7 @@ for(n in n_vec){
   for(error_y0 in error_y0_vec){
 
     # Reset random number generation
-    seedling<-1
+    seedling<-12345
 
     # Loop over replicates
     for(r in 1:R){
@@ -510,7 +541,7 @@ for(n in n_vec){
         # Stratified bootstrap
         parallel<-T
         # Only initiate cluster once if running in parallel (saves time)
-        if(seedling==1 & parallel==T){
+        if(seedling==12345 & parallel==T){
           library(parallel)
 
           # Number of cores
@@ -519,13 +550,14 @@ for(n in n_vec){
           # Create a cluster
           cl <- makeCluster(no_cores)
         }
-        boots_out<-strat_boot_serial(data=test_data, B=B, seedling=seedling)
+        boots_out<-strat_boot_parallel(data=test_data, B=B, seedling=seedling,
+                                   cl=cl)
 
         # Store prediction error for unadjudicated events for methods 1 and 2
         pred_error[d,]<-colMeans(boots_out[,8:13])
 
         # Store percentile bootstrap CIs
-        CI_boot<-ci_boot(boots=boots_out[,1:7],alpha=0.05)
+        CI_boot<-ci_boot(test_data=test_data,boots=boots_out[,1:7],alpha=0.05)
 
         # Store indicator for coverage probability
         coverage[d,]<-(p_true > CI_boot$CI_LB & p_true < CI_boot$CI_UB)*1
@@ -577,7 +609,7 @@ for(n in n_vec){
 if(parallel==T){stopCluster(cl)}
 
 save(CP_mat, Bias_mat, RMSE_mat, Pred_error_mat,
-     file = paste0(script_path,"/output/sims_blinded_50pctadj.R"))
+      file = paste0(script_path,"/output/sims_blinded_75pctadj.R"))
 
 #-------------------------------------------------------------------------
 # Graphing
@@ -613,7 +645,7 @@ Bias_mat %>%
   labs(x = "", y = "Bias") +
   custom_theme +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
-ggsave(file = paste0(script_path,"/output/Bias_50pctadj.jpg"),
+ggsave(file = paste0(script_path,"/output/Bias_75pctadj.jpg"),
        plot = last_plot(), width = 7.5, height = 5.82, dpi = 600)
 
 # Panel plot for coverage prob
@@ -626,7 +658,7 @@ CP_mat %>%
   custom_theme +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
   geom_hline(yintercept=95,linetype=2)
-ggsave(file = paste0(script_path,"/output/Coverage_Prob_50pctadj.jpg"),
+ggsave(file = paste0(script_path,"/output/Coverage_Prob_75pctadj.jpg"),
        plot = last_plot(), width = 7.5, height = 5.82, dpi = 600)
 
 # Panel plot for average RMSE
@@ -639,7 +671,7 @@ RMSE_mat %>%
   custom_theme +
   scale_y_continuous(trans='log10',breaks=c(0.01,0.03,0.10,0.30)) +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
-ggsave(file = paste0(script_path,"/output/RMSE_50pctadj.jpg"),
+ggsave(file = paste0(script_path,"/output/RMSE_75pctadj.jpg"),
        plot = last_plot(), width = 7.5, height = 5.82, dpi = 600)
 
 # Modify Pred_error_mat for plotting
@@ -684,5 +716,5 @@ for(i in seq_along(labs))
 }
 grid.newpage()
 grid.draw(g)
-ggsave(file = paste0(script_path,"/output/prediction_error_50pctadj.jpg"),
+ggsave(file = paste0(script_path,"/output/prediction_error_75pctadj.jpg"),
        plot = g, width = 8, height = 5.5, dpi = 600)

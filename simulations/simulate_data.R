@@ -29,9 +29,6 @@
 #             equal to t_risk if no event occurs before the interim analysis
 # [0, inf)
 #
-# t_interim: time between first randomization and planned interim analysis
-# [0, inf)
-#
 # adjudicated: indicator of adjudication status
 # 0 if adjudicated, 1 if adjudicated
 #
@@ -39,7 +36,7 @@
 # (-inf, inf)
 #
 # x2: a vector of binary variables, e.g., site or geographical region
-# (-inf, inf)
+# {0,1}
 #
 # arm: treatment arm
 # 1 if treatment, 0 if control
@@ -65,12 +62,12 @@ sim_fun<-function(n, error_y0, adj_rate, t_interim, seedling){
     df<-data.frame(y1=rep(NA,n))
 
     # Generate baseline or time-dependent conts predictors
-    
+
     # E.g., mean-centered age
     df$x1<-rnorm(n,0,1)
-    
+
     # E.g., site or geographical region (Europe vs USA)
-    df$x2<-rbinom(n,1,0.5) 
+    df$x2<-rbinom(n,1,0.5)
 
     # Generate treatment arm
     df$arm <- 1
@@ -113,7 +110,7 @@ sim_fun<-function(n, error_y0, adj_rate, t_interim, seedling){
                         runif(n_incomplete,0.5,t_interim)))
     # If t_risk > t_event, then t_eligible=t_event, else t_eligible=t_risk
     df$t_eligible<-ifelse(df$t_risk>df$t_event,df$t_event,df$t_risk)
-    # Set all non-events with complete follow-up to -1 
+    # Set all non-events with complete follow-up to -1
     df$y1[which(df$t_eligible<df$t_event & df$t_eligible==t_interim)]<--1
 
     # Generate event indicator and IDs
@@ -128,21 +125,18 @@ sim_fun<-function(n, error_y0, adj_rate, t_interim, seedling){
                       rep(0, (length(id_event) - num_ones2))))
     df$error<-rep(NA,n)
     df$error[id_noevent]<-NA
-    #sim_logit100<-3*df$y1[id_event]-3
-    #sim_prob100<-1/(1+exp(-sim_logit100))
-    #error <- rbinom(length(sim_prob100), size = 1, sim_prob100)
     df$error[id_event]<-error
     df$y0[id_event]<-abs(error-df$y1[id_event])
     # Set all non-events  to -1
     df$y0[id_noevent]<--1
 
     # Generate indicator for adjudication status associated with x2. For example,
-    # x2 might denote geographical region such that region 0 (Europe) has more 
-    # adjudications than region 1 (USA). 
+    # x2 might denote geographical region such that region 0 (Europe) has more
+    # adjudications than region 1 (USA).
     df$adjudicated<-rep(0,nrow(df))
     # The following intercepts produce the approx adjudication rates
     if(adj_rate==0.25){b0<--1.7} #~25%
-    if(adj_rate==0.5){b0<--0.2} #~50% 
+    if(adj_rate==0.5){b0<--0.2} #~50%
     if(adj_rate==0.75){b0<-0.7} #~75%
     sim_logit2<-df$x2[id_event]+b0
     sim_prob2<-1/(1+exp(-sim_logit2))
