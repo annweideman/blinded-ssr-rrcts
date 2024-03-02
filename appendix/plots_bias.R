@@ -34,7 +34,7 @@ binary_bias <- function(n, p1) {
   return(round(pct_bias, 2))
 }
 
-# Function to calculate percent bias for time-to-event dndpoint
+# Function to calculate percent bias for time-to-event endpoint
 TTE_bias <- function(n, p1) {
 
   sum1 <- sum(1 / (1:n) * choose(n, 1:n) * p1^(1:n) * (1 - p1)^(n - (1:n)))
